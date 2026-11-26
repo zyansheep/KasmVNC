@@ -11,7 +11,8 @@ with nix, instead of repackaging upstream's .deb. The carried commits are:
   TigerVNC's viewer) derails on the first mouse move, drops the connection when a second viewer comes, and has no
   clipboard. A client that announces neither of KasmVNC's own pseudo-encodings (disconnect notify, direct mouse: its
   web client always sends both) now gets standard RFB: 6-byte pointer events, no 253 or 254, and the clipboard as
-  ClientCutText and ServerCutText. KasmVNC's own client is spoken to as before.
+  ClientCutText and ServerCutText (latin-1), or, when it announces the extended clipboard as noVNC does, as UTF-8
+  that way. KasmVNC's own client is spoken to as before.
 - **This directory and `.github/workflows/dither.yml`.** These hold the tracking, the build, the smoke test and the
   releases.
 
