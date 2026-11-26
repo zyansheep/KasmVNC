@@ -17,6 +17,7 @@ Needs on PATH: Xkasmvnc, strace.
 import os
 import re
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -101,6 +102,29 @@ def free_display():
     raise Fail("no free X display number in 90-199")
 
 
+def group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def stop_group(p, grace=10):
+    """Stop a process started with start_new_session=True, and everything left in its group."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(p.pid, sig)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            if p.poll() is not None and not group_alive(p.pid):
+                return
+            time.sleep(0.05)
+    p.wait()
+
+
 def main():
     keep = "--keep" in sys.argv[1:]
     for tool in ("Xkasmvnc", "strace"):
@@ -126,7 +150,8 @@ def main():
         ]
         started = time.monotonic()
         with open(xlog, "wb") as out:
-            x = subprocess.Popen(argv, env=env, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+            x = subprocess.Popen(argv, env=env, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                 start_new_session=True)
         procs.append(("Xkasmvnc", x))
         wait_for("Xkasmvnc's socket", lambda: os.path.exists(sock_path), procs=procs)
 
@@ -191,14 +216,10 @@ def main():
         ok = True
         log("PASS")
     finally:
+        # Each process leads its own group: strace leaves its tracee running when it is stopped alone, so stop the
+        # whole group.
         for name, p in procs:
-            if p.poll() is None:
-                p.terminate()
-                try:
-                    p.wait(10)
-                except subprocess.TimeoutExpired:
-                    p.kill()
-                    p.wait()
+            stop_group(p)
         if not ok or keep:
             text = read_file(os.path.join(tmp, "Xkasmvnc.log"))
             print("----- Xkasmvnc.log (last 60 lines) -----")
