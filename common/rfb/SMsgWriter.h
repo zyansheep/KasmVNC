@@ -60,6 +60,11 @@ namespace rfb {
     void writeBinaryClipboard(const std::vector<SConnection::binaryClipboard_t> &b);
     // Standard RFB's ServerCutText, for a client that is not KasmVNC's own (ConnParams::kasmClient).
     void writeServerCutText(const char* latin1, rdr::U32 len);
+    // The standard extended clipboard, for a standard client that announced it (pseudo-encoding 0xC0A1E5CE).
+    void writeClipboardCaps(rdr::U32 caps, const rdr::U32* lengths);
+    void writeClipboardRequest(rdr::U32 flags);
+    void writeClipboardNotify(rdr::U32 flags);
+    void writeClipboardProvide(rdr::U32 flags, const size_t* lengths, const rdr::U8* const* data);
 
     void writeStats(const char* str, int len);
 

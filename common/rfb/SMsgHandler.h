@@ -58,6 +58,14 @@ namespace rfb {
                                     int scrollX, int scrollY);
 
     virtual void handleClipboardAnnounceBinary(const unsigned num, const char mimes[][32]);
+
+    // The standard extended clipboard (pseudo-encoding 0xC0A1E5CE), from a client that is not KasmVNC's own: its
+    // text is UTF-8, where ClientCutText carries latin-1 only.
+    virtual void handleClipboardCaps(rdr::U32 flags, const rdr::U32* lengths);
+    virtual void handleClipboardRequest(rdr::U32 flags);
+    virtual void handleClipboardPeek(rdr::U32 flags);
+    virtual void handleClipboardNotify(rdr::U32 flags);
+    virtual void handleClipboardProvide(rdr::U32 flags, const size_t* lengths, const rdr::U8* const* data);
     virtual void clearBinaryClipboard();
     virtual void addBinaryClipboard(const char mime[], const rdr::U8 *data,
                                     const rdr::U32 len, const rdr::U32 id);

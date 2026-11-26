@@ -79,6 +79,15 @@ namespace rfb {
     virtual void addBinaryClipboard(const char mime[], const rdr::U8 *data,
                                     const rdr::U32 len, const rdr::U32 id);
 
+    // The standard extended clipboard, for a standard client (SMsgHandler): UTF-8 text both ways.
+    virtual void handleClipboardCaps(rdr::U32 flags, const rdr::U32* lengths);
+    virtual void handleClipboardRequest(rdr::U32 flags);
+    virtual void handleClipboardPeek(rdr::U32 flags);
+    virtual void handleClipboardNotify(rdr::U32 flags);
+    virtual void handleClipboardProvide(rdr::U32 flags, const size_t* lengths, const rdr::U8* const* data);
+    // Whether this client is a standard one that speaks the extended clipboard (its caps have been sent).
+    bool extendedClipboard() const { return sentClipboardCaps; }
+
     virtual void supportsQEMUKeyEvent();
 
     // Methods to be overridden in a derived class
@@ -234,6 +243,7 @@ namespace rfb {
 
     char* clientClipboard;
     bool hasLocalClipboard;
+    bool sentClipboardCaps;
   };
 }
 

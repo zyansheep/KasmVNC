@@ -20,6 +20,7 @@
 #include <network/GetAPI.h>
 #include <network/TcpSocket.h>
 
+#include <rfb/clipboardTypes.h>
 #include <rfb/ComparingUpdateTracker.h>
 #include <rfb/Encoder.h>
 #include <rfb/KeyRemapper.h>
@@ -1622,6 +1623,13 @@ void VNCSConnectionST::writeBinaryClipboard()
 
   if (cp.kasmClient()) {
     writer()->writeBinaryClipboard(binaryClipboard);
+  } else if (extendedClipboard()) {
+    // A standard client with the extended clipboard: told there is text, it asks for it, and gets it as UTF-8
+    // (SConnection::handleClipboardRequest).
+    bool text = false;
+    for (const auto &b : binaryClipboard)
+      text = text || (!strcmp(b.mime, "text/plain") && !b.data.empty());
+    writer()->writeClipboardNotify(text ? clipboardUTF8 : 0);
   } else {
     // A standard client gets the text/plain part as ServerCutText, in latin-1 (what RFB's clipboard carries).
     for (const auto &b : binaryClipboard) {

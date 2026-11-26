@@ -19,6 +19,9 @@
  */
 #include <string>
 #include <rdr/OutStream.h>
+#include <rdr/MemOutStream.h>
+#include <rdr/ZlibOutStream.h>
+#include <rfb/clipboardTypes.h>
 #include <rfb/ConnParams.h>
 #include <rfb/Exception.h>
 #include <rfb/LogWriter.h>
@@ -83,6 +86,71 @@ void SMsgWriter::writeServerCutText(const char* latin1, rdr::U32 len)
   os->pad(3);
   os->writeU32(len);
   os->writeBytes(latin1, len);
+  endMsg();
+}
+
+void SMsgWriter::writeClipboardCaps(rdr::U32 caps, const rdr::U32* lengths)
+{
+  size_t i, count;
+
+  count = 0;
+  for (i = 0; i < 16; i++) {
+    if (caps & (1 << i))
+      count++;
+  }
+
+  startMsg(msgTypeServerCutText);
+  os->pad(3);
+  os->writeS32(-(4 + 4 * count));
+  os->writeU32(caps | clipboardCaps);
+  count = 0;
+  for (i = 0; i < 16; i++) {
+    if (caps & (1 << i))
+      os->writeU32(lengths[count++]);
+  }
+  endMsg();
+}
+
+void SMsgWriter::writeClipboardRequest(rdr::U32 flags)
+{
+  startMsg(msgTypeServerCutText);
+  os->pad(3);
+  os->writeS32(-4);
+  os->writeU32(flags | clipboardRequest);
+  endMsg();
+}
+
+void SMsgWriter::writeClipboardNotify(rdr::U32 flags)
+{
+  startMsg(msgTypeServerCutText);
+  os->pad(3);
+  os->writeS32(-4);
+  os->writeU32(flags | clipboardNotify);
+  endMsg();
+}
+
+void SMsgWriter::writeClipboardProvide(rdr::U32 flags, const size_t* lengths, const rdr::U8* const* data)
+{
+  rdr::MemOutStream mos;
+  rdr::ZlibOutStream zos;
+  int i, count;
+
+  zos.setUnderlying(&mos);
+  count = 0;
+  for (i = 0; i < 16; i++) {
+    if (!(flags & (1 << i)))
+      continue;
+    zos.writeU32(lengths[count]);
+    zos.writeBytes(data[count], lengths[count]);
+    count++;
+  }
+  zos.flush();
+
+  startMsg(msgTypeServerCutText);
+  os->pad(3);
+  os->writeS32(-(4 + mos.length()));
+  os->writeU32(flags | clipboardProvide);
+  os->writeBytes(mos.data(), mos.length());
   endMsg();
 }
 

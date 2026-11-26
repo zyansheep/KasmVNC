@@ -79,6 +79,26 @@ void SMsgHandler::directMouseEvent(int, int, int, int, int)
 {
 }
 
+void SMsgHandler::handleClipboardCaps(rdr::U32, const rdr::U32*)
+{
+}
+
+void SMsgHandler::handleClipboardRequest(rdr::U32)
+{
+}
+
+void SMsgHandler::handleClipboardPeek(rdr::U32)
+{
+}
+
+void SMsgHandler::handleClipboardNotify(rdr::U32)
+{
+}
+
+void SMsgHandler::handleClipboardProvide(rdr::U32, const size_t*, const rdr::U8* const*)
+{
+}
+
 void SMsgHandler::clearBinaryClipboard()
 {
 }

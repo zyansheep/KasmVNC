@@ -25,6 +25,8 @@
 #include <rfb/SMsgWriter.h>
 #include <rfb/SConnection.h>
 #include <rfb/ServerCore.h>
+#include <rfb/clipboardTypes.h>
+#include <rfb/util.h>
 #include <rfb/encodings.h>
 #include <rfb/EncodeManager.h>
 #include <rfb/SSecurity.h>
@@ -52,7 +54,7 @@ SConnection::SConnection()
     is(0), os(0), reader_(0), writer_(0),
     ssecurity(0), state_(RFBSTATE_UNINITIALISED),
     preferredEncoding(encodingRaw),
-    clientClipboard(NULL), hasLocalClipboard(false)
+    clientClipboard(NULL), hasLocalClipboard(false), sentClipboardCaps(false)
 {
   defaultMajorVersion = 3;
   defaultMinorVersion = 8;
@@ -282,6 +284,96 @@ void SConnection::setEncodings(int nEncodings, const rdr::S32 *encodings) {
     }
 
     SMsgHandler::setEncodings(nEncodings, encodings);
+
+    // A standard client that speaks the extended clipboard gets its text as UTF-8 that way: the server says what
+    // it can do once (TigerVNC's server does the same), and from then on ServerCutText is never latin-1 for it.
+    if (!sentClipboardCaps && !cp.kasmClient() && cp.supportsExtendedClipboard) {
+      rdr::U32 sizes[] = { rfb::Server::DLP_ClipAcceptMax ? (rdr::U32) rfb::Server::DLP_ClipAcceptMax : 20 * 1024 * 1024 };
+      writer()->writeClipboardCaps(clipboardUTF8 | clipboardRequest | clipboardPeek | clipboardNotify | clipboardProvide,
+                                   sizes);
+      sentClipboardCaps = true;
+    }
+}
+
+void SConnection::handleClipboardCaps(rdr::U32 flags, const rdr::U32* lengths)
+{
+  cp.setClipboardCaps(flags, lengths);
+}
+
+// Whether bytes are well-formed UTF-8 (no overlong forms, surrogates or code points past U+10FFFF).
+static bool validUTF8(const unsigned char* p, size_t len)
+{
+  size_t i = 0;
+  while (i < len) {
+    unsigned char c = p[i];
+    size_t n;
+    unsigned cp;
+    if (c < 0x80) { i++; continue; }
+    else if ((c & 0xe0) == 0xc0) { n = 1; cp = c & 0x1f; }
+    else if ((c & 0xf0) == 0xe0) { n = 2; cp = c & 0x0f; }
+    else if ((c & 0xf8) == 0xf0) { n = 3; cp = c & 0x07; }
+    else return false;
+    if (i + n >= len) return false;
+    for (size_t k = 1; k <= n; k++) {
+      if ((p[i + k] & 0xc0) != 0x80) return false;
+      cp = (cp << 6) | (p[i + k] & 0x3f);
+    }
+    if ((n == 1 && cp < 0x80) || (n == 2 && cp < 0x800) || (n == 3 && cp < 0x10000) ||
+        cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff))
+      return false;
+    i += n + 1;
+  }
+  return true;
+}
+
+static const SConnection::binaryClipboard_t* textOf(const std::vector<SConnection::binaryClipboard_t>& clip)
+{
+  for (const auto& b : clip) {
+    if (!strcmp(b.mime, "text/plain") && !b.data.empty())
+      return &b;
+  }
+  return NULL;
+}
+
+void SConnection::handleClipboardRequest(rdr::U32 flags)
+{
+  const binaryClipboard_t* text = textOf(binaryClipboard);
+  if (!(flags & clipboardUTF8) || !text)
+    return;
+  // The text with its NUL, as the extended clipboard carries it.
+  std::vector<rdr::U8> buf(text->data.begin(), text->data.end());
+  buf.push_back(0);
+  size_t lengths[] = { buf.size() };
+  const rdr::U8* data[] = { &buf[0] };
+  writer()->writeClipboardProvide(clipboardUTF8, lengths, data);
+}
+
+void SConnection::handleClipboardPeek(rdr::U32)
+{
+  writer()->writeClipboardNotify(textOf(binaryClipboard) ? clipboardUTF8 : 0);
+}
+
+void SConnection::handleClipboardNotify(rdr::U32 flags)
+{
+  // The client's clipboard has text: ask for it (it comes as handleClipboardProvide).
+  if (flags & clipboardUTF8)
+    writer()->writeClipboardRequest(clipboardUTF8);
+}
+
+void SConnection::handleClipboardProvide(rdr::U32 flags, const size_t* lengths, const rdr::U8* const* data)
+{
+  if (!(flags & clipboardUTF8))
+    return;
+  // The text is first among the formats; it ends at its NUL.
+  size_t len = strnlen((const char*) data[0], lengths[0]);
+  if (!validUTF8(data[0], len)) {
+    vlog.error("Invalid UTF-8 in the client's clipboard - ignoring");
+    return;
+  }
+  char mimes[1][32] = { "text/plain" };
+  clearBinaryClipboard();
+  addBinaryClipboard(mimes[0], data[0], len, 0);
+  handleClipboardAnnounceBinary(1, mimes);
 }
 
 void SConnection::clearBinaryClipboard()

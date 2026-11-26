@@ -11,7 +11,8 @@ What it checks, each by waiting for the exact thing it expects:
   4. A client that does not announce KasmVNC's own pseudo-encodings is spoken to in standard RFB (this fork's change):
      a 6-byte pointer event is read as one (an update request right after it is answered), a second viewer joining
      sends the first no message 253, ClientCutText reaches X's CLIPBOARD, and an X client's copy reaches the viewer as
-     ServerCutText.
+     ServerCutText. A standard client that announces the extended clipboard (as noVNC does) gets its capabilities, and
+     text beyond latin-1 (€, an emoji) goes both ways as UTF-8: notify, request, provide.
   5. Xkasmvnc is still running at the end.
 
 Usage: kasmvnc-smoke [--keep] (--keep leaves the temporary directory and its logs).
@@ -28,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 WIDTH, HEIGHT = 1024, 768
 TIMEOUT = 60.0
@@ -73,9 +75,15 @@ def recv(sock, n):
     return bytes(buf)
 
 
-def read_update(sock, bpp, cut=None):
+EXT_CLIPBOARD = -1063131698  # pseudo-encoding 0xC0A1E5CE, as a signed 32-bit number
+CLIP_UTF8 = 1 << 0
+CLIP_CAPS, CLIP_REQUEST, CLIP_PEEK, CLIP_NOTIFY, CLIP_PROVIDE = (1 << 24), (1 << 25), (1 << 26), (1 << 27), (1 << 28)
+
+
+def read_update(sock, bpp, cut=None, ext=None):
     """Read server messages until a FramebufferUpdate; return the raw pixel area it carried. ServerCutText goes to
-    `cut` (a list) when given; any message a standard RFB client does not know fails."""
+    `cut` (a list) when given, and an extended clipboard message (a negative length) to `ext` as (flags, payload);
+    any message a standard RFB client does not know fails."""
     while True:
         (kind,) = struct.unpack("B", recv(sock, 1))
         if kind == 0:
@@ -94,7 +102,13 @@ def read_update(sock, bpp, cut=None):
         if kind == 2:
             continue
         if kind == 3:
-            (n,) = struct.unpack(">xxxI", recv(sock, 7))
+            (n,) = struct.unpack(">xxxi", recv(sock, 7))
+            if n < 0:
+                payload = recv(sock, -n)
+                if ext is None:
+                    raise Fail("an extended clipboard message for a client that did not announce it")
+                ext.append((struct.unpack(">I", payload[:4])[0], payload[4:]))
+                continue
             text = recv(sock, n)
             if cut is not None:
                 cut.append(text.decode("latin-1"))
@@ -276,6 +290,62 @@ def main():
             read_update(s, bpp, cut)
         log("clipboard reached the viewer")
         s.close()
+
+        # The extended clipboard, as noVNC speaks it: UTF-8 both ways.
+        s3 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s3.settimeout(TIMEOUT)
+        s3.connect(sock_path)
+        handshake(s3)
+        s3.sendall(struct.pack(">BxHii", 2, 2, 0, EXT_CLIPBOARD))  # SetEncodings: Raw, ExtendedClipboard
+        ext = []
+
+        def ext_until(what, match):
+            deadline = time.monotonic() + TIMEOUT
+            while True:
+                for m in ext:
+                    if match(m):
+                        ext.remove(m)
+                        return m
+                if time.monotonic() > deadline:
+                    raise Fail(f"no extended clipboard {what} (got {[hex(f) for f, _ in ext]})")
+                s3.sendall(struct.pack(">BBHHHH", 3, 0, 0, 0, w, h))
+                read_update(s3, bpp, None, ext)
+
+        def client_ext(flags, payload=b""):
+            s3.sendall(struct.pack(">Bxxxi", 6, -(4 + len(payload))) + struct.pack(">I", flags) + payload)
+
+        caps = ext_until("caps", lambda m: m[0] & CLIP_CAPS)
+        if not caps[0] & CLIP_UTF8 or not caps[0] & CLIP_PROVIDE:
+            raise Fail(f"the server's clipboard caps lack text or provide: {hex(caps[0])}")
+        client_ext(CLIP_CAPS | CLIP_UTF8 | CLIP_REQUEST | CLIP_PEEK | CLIP_NOTIFY | CLIP_PROVIDE, struct.pack(">I", 1 << 20))
+        sent = "from the viewer \u20ac \U0001f600"
+        client_ext(CLIP_NOTIFY | CLIP_UTF8)
+        ext_until("request after the viewer's notify", lambda m: m[0] & CLIP_REQUEST and m[0] & CLIP_UTF8)
+        body = sent.encode("utf-8") + b"\0"
+        client_ext(CLIP_PROVIDE | CLIP_UTF8, zlib.compress(struct.pack(">I", len(body)) + body))
+        def clipboard3():
+            out = subprocess.run(["xclip", "-o", "-selection", "clipboard"], env=xenv, capture_output=True, timeout=10)
+            return out.returncode == 0 and out.stdout.decode("utf-8", "replace") == sent
+        wait_for("the extended clipboard's UTF-8 in X's CLIPBOARD", clipboard3, procs=procs)
+        log("extended clipboard reached X, as UTF-8")
+        owner2 = subprocess.Popen(["xclip", "-i", "-selection", "clipboard", "-loops", "0"], env=xenv,
+                                  stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  start_new_session=True)
+        procs.append(("xclip", owner2))
+        copied = "from an app \u20ac \U0001f600"
+        owner2.stdin.write(copied.encode("utf-8"))
+        owner2.stdin.close()
+        ext_until("notify of the app's copy", lambda m: m[0] & CLIP_NOTIFY and m[0] & CLIP_UTF8)
+        client_ext(CLIP_REQUEST | CLIP_UTF8)
+        provided = ext_until("provide of the app's copy", lambda m: m[0] & CLIP_PROVIDE)
+        # Sync-flushed, not finished, as TigerVNC's server sends it: what noVNC's inflator reads.
+        raw = zlib.decompressobj().decompress(provided[1])
+        (n,) = struct.unpack(">I", raw[:4])
+        got = raw[4:4 + n].rstrip(b"\0").decode("utf-8", "replace")
+        if got != copied:
+            raise Fail(f"the extended clipboard gave {got!r}, the app copied {copied!r}")
+        log("extended clipboard reached the viewer, as UTF-8")
+        s3.close()
 
         if x.poll() is not None:
             raise Fail(f"Xkasmvnc exited ({x.returncode})")
