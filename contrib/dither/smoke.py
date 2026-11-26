@@ -8,10 +8,14 @@ What it checks, each by waiting for the exact thing it expects:
      strace, it opens neither directory, and it asks the dynamic loader for libavformat.so.<major> by name.
   3. An RFB 3.8 client completes the handshake (security None), gets the screen's size in ServerInit, receives a full
      framebuffer update, sends a key event and gets a further update: the connection stays up.
-  4. Xkasmvnc is still running at the end.
+  4. A client that does not announce KasmVNC's own pseudo-encodings is spoken to in standard RFB (this fork's change):
+     a 6-byte pointer event is read as one (an update request right after it is answered), a second viewer joining
+     sends the first no message 253, ClientCutText reaches X's CLIPBOARD, and an X client's copy reaches the viewer as
+     ServerCutText.
+  5. Xkasmvnc is still running at the end.
 
 Usage: kasmvnc-smoke [--keep] (--keep leaves the temporary directory and its logs).
-Needs on PATH: Xkasmvnc, strace.
+Needs on PATH: Xkasmvnc, strace, xclip.
 """
 
 import os
@@ -69,8 +73,9 @@ def recv(sock, n):
     return bytes(buf)
 
 
-def read_update(sock, bpp):
-    """Read server messages until a FramebufferUpdate; return the raw pixel area it carried."""
+def read_update(sock, bpp, cut=None):
+    """Read server messages until a FramebufferUpdate; return the raw pixel area it carried. ServerCutText goes to
+    `cut` (a list) when given; any message a standard RFB client does not know fails."""
     while True:
         (kind,) = struct.unpack("B", recv(sock, 1))
         if kind == 0:
@@ -90,9 +95,35 @@ def read_update(sock, bpp):
             continue
         if kind == 3:
             (n,) = struct.unpack(">xxxI", recv(sock, 7))
-            recv(sock, n)
+            text = recv(sock, n)
+            if cut is not None:
+                cut.append(text.decode("latin-1"))
             continue
         raise Fail(f"unexpected server message type {kind}")
+
+
+def handshake(sock):
+    """RFB 3.8 with security None, shared; returns (width, height, bpp)."""
+    banner = recv(sock, 12)
+    if not banner.startswith(b"RFB 003."):
+        raise Fail(f"unexpected banner {banner!r}")
+    sock.sendall(b"RFB 003.008\n")
+    (count,) = struct.unpack("B", recv(sock, 1))
+    if count == 0:
+        (n,) = struct.unpack(">I", recv(sock, 4))
+        raise Fail(f"server refused: {recv(sock, n).decode(errors='replace')}")
+    if 1 not in list(recv(sock, count)):
+        raise Fail("no security type None offered")
+    sock.sendall(b"\x01")
+    (result,) = struct.unpack(">I", recv(sock, 4))
+    if result != 0:
+        raise Fail(f"security result {result}")
+    sock.sendall(b"\x01")
+    w, h = struct.unpack(">HH", recv(sock, 4))
+    pf = recv(sock, 16)
+    (nl,) = struct.unpack(">I", recv(sock, 4))
+    recv(sock, nl)
+    return w, h, pf[0]
 
 
 def free_display():
@@ -127,7 +158,7 @@ def stop_group(p, grace=10):
 
 def main():
     keep = "--keep" in sys.argv[1:]
-    for tool in ("Xkasmvnc", "strace"):
+    for tool in ("Xkasmvnc", "strace", "xclip"):
         if not shutil.which(tool):
             raise Fail(f"{tool} not on PATH")
 
@@ -198,6 +229,52 @@ def main():
         s.sendall(struct.pack(">BBHHHH", 3, 0, 0, 0, w, h))
         read_update(s, bpp)
         log("key event sent, connection still up")
+
+        # Standard RFB's pointer event, 6 bytes, then an update request: read as 11 bytes, the request would be
+        # swallowed and no update would come.
+        s.sendall(struct.pack(">BBHH", 5, 0, 10, 10))
+        s.sendall(struct.pack(">BBHHHH", 3, 0, 0, 0, w, h))
+        read_update(s, bpp)
+        log("6-byte pointer event read as one")
+
+        # A second viewer: the first is sent no message 253 (read_update fails on any type it does not know).
+        s2 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s2.settimeout(TIMEOUT)
+        s2.connect(sock_path)
+        handshake(s2)
+        s.sendall(struct.pack(">BBHHHH", 3, 0, 0, 0, w, h))
+        read_update(s, bpp)
+        s2.close()
+        s.sendall(struct.pack(">BBHHHH", 3, 0, 0, 0, w, h))
+        read_update(s, bpp)
+        log("a second viewer came and went; the first got no KasmVNC session message")
+
+        # The clipboard both ways, as standard RFB carries it (latin-1).
+        xenv = {**env, "DISPLAY": f":{display}"}
+        sent = "from the viewer \xe9"
+        data = sent.encode("latin-1")
+        s.sendall(struct.pack(">BxxxI", 6, len(data)) + data)
+        def clipboard():
+            out = subprocess.run(["xclip", "-o", "-selection", "clipboard"], env=xenv, capture_output=True, timeout=10)
+            return out.returncode == 0 and out.stdout.decode("utf-8", "replace") == sent
+        wait_for("ClientCutText in X's CLIPBOARD", clipboard, procs=procs)
+        log("clipboard reached X")
+        owner = subprocess.Popen(["xclip", "-i", "-selection", "clipboard", "-loops", "0"], env=xenv,
+                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+        procs.append(("xclip", owner))
+        owner.stdin.write("from an app \u00fc".encode("utf-8"))
+        owner.stdin.close()
+        cut = []
+        deadline = time.monotonic() + TIMEOUT
+        while "from an app \u00fc" not in cut:
+            if time.monotonic() > deadline:
+                raise Fail(f"no ServerCutText with the app's copy (got {cut!r})")
+            # A full update each time (an incremental one waits for a change that may never come); the cut text
+            # arrives between them.
+            s.sendall(struct.pack(">BBHHHH", 3, 0, 0, 0, w, h))
+            read_update(s, bpp, cut)
+        log("clipboard reached the viewer")
         s.close()
 
         if x.poll() is not None:

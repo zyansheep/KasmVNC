@@ -14,7 +14,7 @@
   inherit kasmvnc;
   smoke = pkgs.writeShellApplication {
     name = "kasmvnc-smoke";
-    runtimeInputs = [ kasmvnc ] ++ (with pkgs; [ python3 strace ]);
+    runtimeInputs = [ kasmvnc ] ++ (with pkgs; [ python3 strace xclip ]);
     text = ''exec python3 -I ${./smoke.py} "$@"'';
   };
 }
