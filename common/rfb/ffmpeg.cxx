@@ -17,47 +17,37 @@
  */
 
 #include "ffmpeg.h"
-#include <array>
-#include <filesystem>
+#include <string>
 #include "LogWriter.h"
 
 static rfb::LogWriter vlog("ffmpeg");
 
 FFmpeg::FFmpeg() {
 
-    static constexpr std::array<std::string_view, 2> paths = {"/usr/lib/", "/usr/lib64"};
-
-    namespace fs = std::filesystem;
     using namespace std::string_literals;
 
-    auto load_lib = [](auto *lib) {
-        void *handle{};
-        for (const auto &dir: paths) {
-            if (!fs::exists(dir) || !fs::is_directory(dir))
-                continue;
+    // Open each library by its soname, as the dynamic loader finds it (its
+    // cache, LD_LIBRARY_PATH, the binary's RUNPATH): the major version these
+    // headers declare first, since that is the ABI this was built against,
+    // then the unversioned development link. Only those: walking the library
+    // directories for a matching file name took seconds on every start, and
+    // could pick up a different major version than the one built against.
+    auto load_lib = [](const char *lib, int major) {
+        const std::string names[] = {lib + ".so."s + std::to_string(major), lib + ".so"s};
 
-            for (const auto &entry: fs::recursive_directory_iterator(dir)) {
-                if (!entry.is_regular_file())
-                    continue;
-
-                const std::string filename = entry.path().filename().string();
-                if (filename.find(lib) != std::string::npos) {
-                    handle = dlopen(filename.c_str(), RTLD_LAZY);
-
-                    break;
-                }
+        for (const auto &name: names) {
+            if (void *handle = dlopen(name.c_str(), RTLD_LAZY)) {
+                vlog.debug("Opened %s", name.c_str());
+                return DlHandlerGuard{handle};
             }
         }
 
-        if (!handle)
-            throw std::runtime_error("Could not open "s + lib);
-
-        return DlHandlerGuard{handle};
+        throw std::runtime_error("Could not open "s + names[0] + ": " + dlerror());
     };
 
     // libavformat
     try {
-        libavformat = load_lib("libavformat.so");
+        libavformat = load_lib("libavformat", LIBAVFORMAT_VERSION_MAJOR);
         auto handle = libavformat.get();
 
         avformat_open_input_f = D_LOOKUP_SYM(handle, avformat_open_input);
@@ -71,7 +61,7 @@ FFmpeg::FFmpeg() {
         vlog.debug("libavformat.so loaded");
 
         // libavutil
-        libavutil = load_lib("libavutil.so");
+        libavutil = load_lib("libavutil", LIBAVUTIL_VERSION_MAJOR);
         handle = libavutil.get();
 
         av_frame_free_f = D_LOOKUP_SYM(handle, av_frame_free);
@@ -95,7 +85,7 @@ FFmpeg::FFmpeg() {
         vlog.debug("libavutil.so loaded");
 
         // libswscale
-        libswscale = load_lib("libswscale.so");
+        libswscale = load_lib("libswscale", LIBSWSCALE_VERSION_MAJOR);
         handle = libswscale.get();
 
         sws_freeContext_f = D_LOOKUP_SYM(handle, sws_freeContext);
@@ -104,7 +94,7 @@ FFmpeg::FFmpeg() {
         vlog.debug("libswscale.so loaded");
 
         // libavcodec
-        libavcodec = load_lib("libavcodec.so");
+        libavcodec = load_lib("libavcodec", LIBAVCODEC_VERSION_MAJOR);
         handle = libavcodec.get();
 
         avcodec_version_f = D_LOOKUP_SYM(handle, avcodec_version);
