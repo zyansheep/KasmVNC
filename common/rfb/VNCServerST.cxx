@@ -1389,8 +1389,10 @@ void VNCServerST::notifyUserAction(const VNCSConnectionST* newConnection, std::s
 
   for (auto client : clients ) {
     // Don't notify the connection that just joined, and only notify authenticated connections
+    // Only KasmVNC's own client knows these messages; a standard one would read them as an unknown type and drop the
+    // connection (ConnParams::kasmClient).
     if (client != newConnection && client->authenticated() &&
-        client->state() == SConnection::RFBSTATE_NORMAL) {
+        client->state() == SConnection::RFBSTATE_NORMAL && client->cp.kasmClient()) {
       try {
         if (actionType == Join) {
           client->writer()->writeUserJoinedSession(username);

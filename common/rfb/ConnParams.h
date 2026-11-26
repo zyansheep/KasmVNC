@@ -121,6 +121,12 @@ namespace rfb {
     bool supportsDisconnectNotify;
     bool supportsDirectMouse;
 
+    // KasmVNC's own web client announces both of these, and speaks KasmVNC's RFB: 11-byte pointer events, the
+    // user-joined and user-left messages (253, 254), and the clipboard only through message 180. A client that
+    // announces neither (noVNC, TigerVNC's viewer, any standard RFB client) is spoken to in standard RFB instead:
+    // 6-byte pointer events, no 253 or 254, and the clipboard as ClientCutText and ServerCutText (latin-1).
+    bool kasmClient() const { return supportsDisconnectNotify || supportsDirectMouse; }
+
     bool supportsUdp;
 
     int compressLevel;

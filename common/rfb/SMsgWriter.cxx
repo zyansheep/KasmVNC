@@ -77,6 +77,15 @@ void SMsgWriter::writeBell()
   endMsg();
 }
 
+void SMsgWriter::writeServerCutText(const char* latin1, rdr::U32 len)
+{
+  startMsg(msgTypeServerCutText);
+  os->pad(3);
+  os->writeU32(len);
+  os->writeBytes(latin1, len);
+  endMsg();
+}
+
 void SMsgWriter::writeBinaryClipboard(const std::vector<SConnection::binaryClipboard_t> &b)
 {
   startMsg(msgTypeBinaryClipboard);

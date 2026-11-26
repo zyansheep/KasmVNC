@@ -1620,7 +1620,18 @@ void VNCSConnectionST::writeBinaryClipboard()
     return;
   }
 
-  writer()->writeBinaryClipboard(binaryClipboard);
+  if (cp.kasmClient()) {
+    writer()->writeBinaryClipboard(binaryClipboard);
+  } else {
+    // A standard client gets the text/plain part as ServerCutText, in latin-1 (what RFB's clipboard carries).
+    for (const auto &b : binaryClipboard) {
+      if (strcmp(b.mime, "text/plain") || b.data.empty())
+        continue;
+      CharArray latin1(utf8ToLatin1((const char *) &b.data[0], b.data.size()));
+      writer()->writeServerCutText(latin1.buf, strlen(latin1.buf));
+      break;
+    }
+  }
 
   gettimeofday(&lastClipboardOp, nullptr);
 }

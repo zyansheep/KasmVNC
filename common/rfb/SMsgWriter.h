@@ -58,6 +58,8 @@ namespace rfb {
     void writeBell();
 
     void writeBinaryClipboard(const std::vector<SConnection::binaryClipboard_t> &b);
+    // Standard RFB's ServerCutText, for a client that is not KasmVNC's own (ConnParams::kasmClient).
+    void writeServerCutText(const char* latin1, rdr::U32 len);
 
     void writeStats(const char* str, int len);
 

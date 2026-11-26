@@ -239,6 +239,14 @@ void SMsgReader::readKeyEvent()
 
 void SMsgReader::readPointerEvent()
 {
+  if (!handler->cp.kasmClient()) {
+    // Standard RFB: an 8-bit button mask (the wheel as buttons 4 to 7), then x and y.
+    int mask = is->readU8();
+    int x = is->readU16();
+    int y = is->readU16();
+    handler->pointerEvent(Point(x, y), mask, false, false, 0, 0);
+    return;
+  }
   int mask = is->readU16();
   int x = is->readU16();
   int y = is->readU16();
@@ -258,6 +266,23 @@ void SMsgReader::readClientCutText()
     rdr::S32 slen = len;
     slen = -slen;
     readExtendedClipboard(slen);
+    return;
+  }
+  if (!handler->cp.kasmClient()) {
+    // Standard RFB's clipboard: latin-1 text, taken as the binary clipboard's text/plain (as UTF-8).
+    if (rfb::Server::DLP_ClipAcceptMax && len > (unsigned) rfb::Server::DLP_ClipAcceptMax) {
+      is->skip(len);
+      vlog.info("DLP: refused to receive clipboard text, too large");
+      return;
+    }
+    CharArray latin1(len + 1);
+    is->readBytes(latin1.buf, len);
+    latin1.buf[len] = '\0';
+    CharArray utf8(latin1ToUTF8(latin1.buf, len));
+    char mimes[1][32] = { "text/plain" };
+    handler->clearBinaryClipboard();
+    handler->addBinaryClipboard(mimes[0], (const rdr::U8 *) utf8.buf, strlen(utf8.buf), 0);
+    handler->handleClipboardAnnounceBinary(1, mimes);
     return;
   }
   is->skip(len);
