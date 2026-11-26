@@ -3,7 +3,8 @@
 #
 
 cmake_minimum_required(VERSION 2.8)
-if(POLICY CMP0022)
+# CMake 4 no longer has CMP0022's old behaviour, and refuses to set it.
+if(POLICY CMP0022 AND CMAKE_VERSION VERSION_LESS 4.0)
   cmake_policy(SET CMP0022 OLD)
 endif()
 
